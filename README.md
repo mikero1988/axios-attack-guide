@@ -23,89 +23,6 @@ Axios is not some obscure utility. It is **the** HTTP client for JavaScript:
 
 ---
 
-## What Happened — The Full Story
-
-A threat actor stole a long-lived npm authentication token belonging to **jasonsaayman**, the lead maintainer of axios. With that token, they changed the account's email to `ifstap@proton.me` (a Proton Mail address they controlled) and published two malicious versions directly via the npm CLI — completely bypassing the GitHub Actions OIDC Trusted Publishing workflow that would normally gate releases.
-
-The compromised versions are:
-
-| Status | Version | Safe Alternative |
-|--------|---------|-----------------|
-| **COMPROMISED** | `axios@1.14.1` | Downgrade to `axios@1.14.0` |
-| **COMPROMISED** | `axios@0.30.4` | Downgrade to `axios@0.30.3` |
-
-Both were published within a **39-minute window**.
-
-### The Attack Step by Step
-
-**Stage 1 — Preparation (18 hours before)**
-
-The attacker published a seemingly harmless package called `plain-crypto-js@4.2.0` to npm. It did nothing malicious. This was bait — establishing a "clean" version so the follow-up wouldn't look suspicious.
-
-**Stage 2 — Malicious payload drops (March 30, 23:59 UTC)**
-
-`plain-crypto-js@4.2.1` was published. This version contained the actual RAT dropper disguised as a `postinstall` script in `setup.js`.
-
-**Stage 3 — Axios gets poisoned**
-
-The attacker updated axios's `package.json` to add `plain-crypto-js` as a dependency. This package is **never imported or referenced** anywhere in axios source code. Its only purpose is to trigger the `postinstall` hook during `npm install`.
-
-For reference, legitimate axios has exactly 3 dependencies:
-- `follow-redirects`
-- `form-data`
-- `proxy-from-env`
-
-Anything else is a red flag.
-
-**Stage 4 — The dropper runs**
-
-When a developer runs `npm install` and the compromised axios pulls in `plain-crypto-js`, npm automatically executes `setup.js` via the `postinstall` hook. The script uses a two-layer obfuscation scheme to hide its intent:
-
-- **Layer 1:** Reversed base64 with underscore-to-equals substitution
-- **Layer 2:** XOR cipher with key `OrDeR_7077` using index formula `7*i*i % 10` plus constant `333`
-
-All 18 malicious strings (module imports, C2 URLs, shell commands, file paths) are encoded this way so nothing shows up in a simple string search.
-
-**Stage 5 — Platform-specific RAT deployment**
-
-The dropper detects the OS and downloads the appropriate payload from the C2 server:
-
-| OS | Drops To | Disguised As |
-|----|----------|-------------|
-| macOS | `/Library/Caches/com.apple.act.mond` | Apple system cache daemon |
-| Windows | `%PROGRAMDATA%\wt.exe` | Windows Terminal binary |
-| Linux | `/tmp/ld.py` | Generic temp file |
-
-On Windows, it's particularly sneaky: it copies `powershell.exe` to `%PROGRAMDATA%\wt.exe` to evade EDR tools, then launches a hidden VBScript (`%TEMP%\6202033.vbs`) that calls a PowerShell script (`%TEMP%\6202033.ps1`) with execution policy bypass.
-
-The entire download + execution takes approximately **1.1 seconds**.
-
-**Stage 6 — Self-destruct**
-
-After the RAT is deployed, the dropper cleans up after itself:
-
-1. Deletes `setup.js` (the malicious script)
-2. Deletes the malicious `package.json` (the one with the postinstall hook)
-3. Renames a stashed `package.md` back to `package.json` (restoring a clean-looking v4.2.0)
-
-After this cleanup, the installed package looks completely normal. A developer inspecting `node_modules/plain-crypto-js` after the fact would see nothing suspicious.
-
-**Stage 7 — RAT phones home**
-
-The deployed RAT:
-
-- Fingerprints the system (hostname, username, OS version, CPU, boot time, running processes, directory listings)
-- Beacons to the C2 server **every hour** via HTTP POST with Base64-encoded data
-- Accepts commands: `runscript` (shell/AppleScript execution), `peinject` (inject signed payloads), `rundir` (enumerate filesystems), `kill` (self-terminate)
-
-**Stage 8 — Detection**
-
-Socket.dev's automated malware scanner flagged `plain-crypto-js@4.2.1` within **6 minutes** of publication. StepSecurity published the first detailed analysis. npm removed the compromised versions within hours, but by then an unknown number of machines had already installed them.
-
-Huntress later identified **100+ confirmed compromised hosts**.
-
----
-
 ## How to Check If You're Affected
 
 ### Quick version check
@@ -117,25 +34,27 @@ npm list -g axios
 
 If the output shows `1.14.1` or `0.30.4` — you need to act now.
 
-### Run the detection scan
-
-I wrote scanning scripts that check your system for all known indicators. They're different from what's floating around — they walk your entire home directory for node_modules, parse lockfiles properly, check for the RAT file artifacts, and scan for active C2 connections.
+### Run the detection scan (one-liner)
 
 **Mac / Linux:**
 
 ```bash
-git clone https://github.com/mikero1988/axios-attack-guide.git
-cd axios-attack-guide
-chmod +x scan-axios.sh
-./scan-axios.sh
+curl -sL https://raw.githubusercontent.com/mikero1988/axios-attack-guide/main/scan-axios.sh | bash
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
+irm https://raw.githubusercontent.com/mikero1988/axios-attack-guide/main/scan-axios.ps1 | iex
+```
+
+Or clone and run locally if you prefer to read the script first:
+
+```bash
 git clone https://github.com/mikero1988/axios-attack-guide.git
 cd axios-attack-guide
-.\Scan-Axios.ps1
+./scan-axios.sh                          # mac/linux
+.\scan-axios.ps1                         # windows
 ```
 
 You can also pass a specific directory to scan:
@@ -145,7 +64,7 @@ You can also pass a specific directory to scan:
 ```
 
 ```powershell
-.\Scan-Axios.ps1 -ScanRoot "C:\Users\you\projects"
+.\scan-axios.ps1 -ScanRoot "C:\Users\you\projects"
 ```
 
 ### Manual checks
@@ -233,6 +152,89 @@ Even if you've since updated, this tells you if the compromised version was ever
 | Windows | `%TEMP%\6202033.vbs` | Temp launcher (auto-deleted) |
 | Windows | `%TEMP%\6202033.ps1` | Temp launcher (auto-deleted) |
 | Linux | `/tmp/ld.py` | Generic temp file |
+
+---
+
+## What Happened — The Full Story
+
+A threat actor stole a long-lived npm authentication token belonging to **jasonsaayman**, the lead maintainer of axios. With that token, they changed the account's email to `ifstap@proton.me` (a Proton Mail address they controlled) and published two malicious versions directly via the npm CLI — completely bypassing the GitHub Actions OIDC Trusted Publishing workflow that would normally gate releases.
+
+The compromised versions are:
+
+| Status | Version | Safe Alternative |
+|--------|---------|-----------------|
+| **COMPROMISED** | `axios@1.14.1` | Downgrade to `axios@1.14.0` |
+| **COMPROMISED** | `axios@0.30.4` | Downgrade to `axios@0.30.3` |
+
+Both were published within a **39-minute window**.
+
+### The Attack Step by Step
+
+**Stage 1 — Preparation (18 hours before)**
+
+The attacker published a seemingly harmless package called `plain-crypto-js@4.2.0` to npm. It did nothing malicious. This was bait — establishing a "clean" version so the follow-up wouldn't look suspicious.
+
+**Stage 2 — Malicious payload drops (March 30, 23:59 UTC)**
+
+`plain-crypto-js@4.2.1` was published. This version contained the actual RAT dropper disguised as a `postinstall` script in `setup.js`.
+
+**Stage 3 — Axios gets poisoned**
+
+The attacker updated axios's `package.json` to add `plain-crypto-js` as a dependency. This package is **never imported or referenced** anywhere in axios source code. Its only purpose is to trigger the `postinstall` hook during `npm install`.
+
+For reference, legitimate axios has exactly 3 dependencies:
+- `follow-redirects`
+- `form-data`
+- `proxy-from-env`
+
+Anything else is a red flag.
+
+**Stage 4 — The dropper runs**
+
+When a developer runs `npm install` and the compromised axios pulls in `plain-crypto-js`, npm automatically executes `setup.js` via the `postinstall` hook. The script uses a two-layer obfuscation scheme to hide its intent:
+
+- **Layer 1:** Reversed base64 with underscore-to-equals substitution
+- **Layer 2:** XOR cipher with key `OrDeR_7077` using index formula `7*i*i % 10` plus constant `333`
+
+All 18 malicious strings (module imports, C2 URLs, shell commands, file paths) are encoded this way so nothing shows up in a simple string search.
+
+**Stage 5 — Platform-specific RAT deployment**
+
+The dropper detects the OS and downloads the appropriate payload from the C2 server:
+
+| OS | Drops To | Disguised As |
+|----|----------|-------------|
+| macOS | `/Library/Caches/com.apple.act.mond` | Apple system cache daemon |
+| Windows | `%PROGRAMDATA%\wt.exe` | Windows Terminal binary |
+| Linux | `/tmp/ld.py` | Generic temp file |
+
+On Windows, it's particularly sneaky: it copies `powershell.exe` to `%PROGRAMDATA%\wt.exe` to evade EDR tools, then launches a hidden VBScript (`%TEMP%\6202033.vbs`) that calls a PowerShell script (`%TEMP%\6202033.ps1`) with execution policy bypass.
+
+The entire download + execution takes approximately **1.1 seconds**.
+
+**Stage 6 — Self-destruct**
+
+After the RAT is deployed, the dropper cleans up after itself:
+
+1. Deletes `setup.js` (the malicious script)
+2. Deletes the malicious `package.json` (the one with the postinstall hook)
+3. Renames a stashed `package.md` back to `package.json` (restoring a clean-looking v4.2.0)
+
+After this cleanup, the installed package looks completely normal. A developer inspecting `node_modules/plain-crypto-js` after the fact would see nothing suspicious.
+
+**Stage 7 — RAT phones home**
+
+The deployed RAT:
+
+- Fingerprints the system (hostname, username, OS version, CPU, boot time, running processes, directory listings)
+- Beacons to the C2 server **every hour** via HTTP POST with Base64-encoded data
+- Accepts commands: `runscript` (shell/AppleScript execution), `peinject` (inject signed payloads), `rundir` (enumerate filesystems), `kill` (self-terminate)
+
+**Stage 8 — Detection**
+
+Socket.dev's automated malware scanner flagged `plain-crypto-js@4.2.1` within **6 minutes** of publication. StepSecurity published the first detailed analysis. npm removed the compromised versions within hours, but by then an unknown number of machines had already installed them.
+
+Huntress later identified **100+ confirmed compromised hosts**.
 
 ---
 
