@@ -10,8 +10,8 @@
     Root directory to scan. Defaults to the current user's home directory.
 
 .EXAMPLE
-    .\Scan-Axios.ps1
-    .\Scan-Axios.ps1 -ScanRoot "D:\projects"
+    .\scan-axios.ps1
+    .\scan-axios.ps1 -ScanRoot "D:\projects"
 #>
 
 param(
@@ -142,7 +142,7 @@ if ($gitCmd) {
     foreach ($gd in $gitDirs) {
         $repoRoot = $gd.Parent.FullName
         try {
-            $logOutput = & git -C $repoRoot log --all -p -- package-lock.json yarn.lock pnpm-lock.yaml 2>$null | Out-String
+            $logOutput = & git -C $repoRoot log --all --since="30 days ago" -p -- package-lock.json yarn.lock pnpm-lock.yaml 2>$null | Out-String
             if ($logOutput -match "plain-crypto-js|`"axios`": `"1\.14\.1`"|`"axios`": `"0\.30\.4`"|axios@1\.14\.1|axios@0\.30\.4") {
                 Write-Warn "exposure found in repo: $repoRoot"
                 Add-Report "GIT HISTORY: compromise traces in $repoRoot"

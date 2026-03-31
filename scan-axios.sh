@@ -154,9 +154,9 @@ scan_git_history() {
         local repo_root
         repo_root=$(dirname "$gitdir")
 
-        # search all branches for the phantom dep or bad versions in lockfiles
+        # search last 30 days across all branches for the phantom dep or bad versions
         local hits
-        hits=$(git -C "$repo_root" log --all -p -- package-lock.json yarn.lock pnpm-lock.yaml 2>/dev/null \
+        hits=$(git -C "$repo_root" log --all --since="30 days ago" -p -- package-lock.json yarn.lock pnpm-lock.yaml 2>/dev/null \
             | grep -E "(plain-crypto-js|\"axios\": \"1\.14\.1\"|\"axios\": \"0\.30\.4\"|axios@1\.14\.1|axios@0\.30\.4)" \
             | head -5 || true)
 
